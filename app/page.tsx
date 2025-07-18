@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -17,26 +17,61 @@ import {
   FileText,
   Download,
   Play,
+  Pause,
   ArrowRight,
 } from "lucide-react";
+
+interface TimedLyric {
+  start: number;
+  end: number;
+  text: string;
+}
 
 export default function HomePage() {
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
   const [taskId, setTaskId] = useState<string | null>(null);
   const [lyrics, setLyrics] = useState<string>("");
+
+  const [timedLyrics, setTimedLyrics] = useState<TimedLyric[]>([]);
+  const [currentLine, setCurrentLine] = useState<number>(-1);
+
   const [audioUrl, setAudioUrl] = useState<string>("");
   const [subtitleUrl, setSubtitleUrl] = useState<string>("");
   const [showCompleteMsg, setShowCompleteMsg] = useState(false);
 
+  const [isPlaying, setIsPlaying] = useState(false);
+
+  const audioRef = useRef<HTMLAudioElement>(null);
+  const lyricsRef = useRef<HTMLDivElement>(null);
+
   const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "";
-  const POLL_INTERVAL = 3000; // 3초
 
   const isValidYouTubeUrl = (url: string) => {
     const youtubeRegex = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+/;
     return youtubeRegex.test(url);
+  };
+
+  const parseLyrics = (rawLyrics: string): TimedLyric[] => {
+    const lines = rawLyrics.split(/\r?\n/);
+    const timeRegex = /\[(\d+(?:\.\d+)?) ~ (\d+(?:\.\d+)?)\]/;
+
+    const result: TimedLyric[] = [];
+
+    for (const line of lines) {
+      const match = line.match(timeRegex);
+      if (match) {
+        const start = parseFloat(match[1]);
+        const end = parseFloat(match[2]);
+        const text = line.replace(timeRegex, "").trim();
+        if (text) {
+          result.push({ start, end, text });
+        }
+      }
+    }
+
+    return result;
   };
 
   const handleAnalysis = async () => {
@@ -46,9 +81,12 @@ export default function HomePage() {
     setIsLoading(true);
     setTaskId(null);
     setLyrics("");
+    setTimedLyrics([]);
+    setCurrentLine(-1);
     setAudioUrl("");
     setSubtitleUrl("");
     setShowCompleteMsg(false);
+    setIsPlaying(false);
 
     try {
       const res = await fetch(`${API_BASE_URL}/api/process`, {
@@ -57,67 +95,88 @@ export default function HomePage() {
         body: JSON.stringify({ url: youtubeUrl }),
       });
 
-      if (!res.ok) {
-        throw new Error("분석 요청 실패");
-      }
+      if (!res.ok) throw new Error("분석 요청 실패");
 
       const data = await res.json();
-      console.log("서버 응답 데이터:", data);
-
-      if (data.result !== "success") {
-        console.error("처리 실패 데이터:", data);
-        throw new Error("처리 실패");
-      }
+      if (data.result !== "success") throw new Error("처리 실패");
 
       setTaskId(data.uriId);
+      setLyrics(data.lyrics || "");
+      setAudioUrl(
+        data.no_vocals_url.startsWith("http")
+          ? data.no_vocals_url
+          : API_BASE_URL + data.no_vocals_url
+      );
+      setSubtitleUrl(`${API_BASE_URL}/api/download/${data.uriId}/subtitle`);
+      setShowCompleteMsg(true);
+
+      if (data.lyrics) {
+        const parsed = parseLyrics(data.lyrics);
+        setTimedLyrics(parsed);
+      }
     } catch (e) {
-      console.error("분석 요청 중 오류 발생:", e);
+      console.error("분석 요청 중 오류:", e);
       setError("분석 요청 중 오류가 발생했습니다.");
+    } finally {
       setIsLoading(false);
     }
   };
 
-  useEffect(() => {
-    if (!taskId) return;
+  const handleTimeUpdate = () => {
+    if (!audioRef.current || timedLyrics.length === 0) return;
+    const currentTime = audioRef.current.currentTime;
 
-    const interval = setInterval(async () => {
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/status/${taskId}`);
-        if (!res.ok) throw new Error("상태 확인 실패");
+    const idx = timedLyrics.findIndex(
+      (line) => currentTime >= line.start && currentTime < line.end
+    );
 
-        const statusData = await res.json();
-        console.log("상태 확인 응답:", statusData);
-
-        if (statusData.status === "COMPLETED") {
-          clearInterval(interval);
-
-          const [lyricsRes, subtitleRes] = await Promise.all([
-            fetch(`${API_BASE_URL}/api/result/${taskId}/lyrics`),
-            fetch(`${API_BASE_URL}/api/download/${taskId}/subtitle`),
-          ]);
-
-          const lyricsText = await lyricsRes.text();
-
-          setLyrics(lyricsText);
-          setSubtitleUrl(`${API_BASE_URL}/api/download/${taskId}/subtitle`);
-          setAudioUrl(statusData.mrPath); // 절대 URL 사용
-          setShowCompleteMsg(true);
-          setIsLoading(false);
-        } else if (statusData.status === "FAILED") {
-          clearInterval(interval);
-          setError("처리 실패");
-          setIsLoading(false);
+    if (idx !== currentLine) {
+      setCurrentLine(idx);
+      if (lyricsRef.current && idx !== -1) {
+        const lineEl = lyricsRef.current.querySelector(
+          `[data-index="${idx}"]`
+        ) as HTMLElement | null;
+        if (lineEl) {
+          lineEl.scrollIntoView({
+            behavior: "smooth",
+            block: "center",
+          });
         }
-      } catch (err) {
-        console.error("상태 체크 오류:", err);
-        clearInterval(interval);
-        setError("상태 확인 중 오류");
-        setIsLoading(false);
       }
-    }, POLL_INTERVAL);
+    }
+  };
 
-    return () => clearInterval(interval);
-  }, [taskId]);
+  const handlePlayAudio = () => {
+    if (!audioRef.current) return;
+
+    const audio = audioRef.current;
+
+    if (audio.paused) {
+      audio
+        .play()
+        .then(() => {
+          setIsPlaying(true);
+        })
+        .catch((e) => {
+          console.error("오디오 재생 오류:", e);
+        });
+    } else {
+      audio.pause();
+      setIsPlaying(false);
+    }
+  };
+
+  const handleAudioEnded = () => {
+    setIsPlaying(false);
+  };
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (audio) {
+      audio.addEventListener("ended", handleAudioEnded);
+      return () => audio.removeEventListener("ended", handleAudioEnded);
+    }
+  }, []);
 
   const sampleUrls = [
     "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
@@ -159,8 +218,7 @@ export default function HomePage() {
     {
       number: "03",
       title: "결과 확인 및 다운로드",
-      description:
-        "처리된 오디오를 재생하고 추출된 가사를 확인한 후 다운로드하세요.",
+      description: "처리된 오디오를 재생하고 추출된 가사를 확인한 후 다운로드하세요.",
     },
   ];
 
@@ -212,11 +270,7 @@ export default function HomePage() {
 
               <Button
                 onClick={handleAnalysis}
-                disabled={
-                  !youtubeUrl.trim() ||
-                  !isValidYouTubeUrl(youtubeUrl) ||
-                  isLoading
-                }
+                disabled={!youtubeUrl.trim() || !isValidYouTubeUrl(youtubeUrl) || isLoading}
                 className="w-full"
                 size="lg"
               >
@@ -272,14 +326,12 @@ export default function HomePage() {
           </Card>
         </div>
 
-        {/* 완료 메시지 */}
         {showCompleteMsg && (
           <div className="max-w-md mx-auto p-4 mb-8 bg-green-100 text-green-800 rounded text-center font-semibold">
             🎉 처리 완료! 결과를 확인하세요.
           </div>
         )}
 
-        {/* 결과 */}
         {taskId && (
           <div className="mb-20">
             <h2 className="text-3xl font-bold text-center text-gray-900 mb-12">
@@ -287,6 +339,7 @@ export default function HomePage() {
             </h2>
             <div className="max-w-4xl mx-auto">
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                {/* 오디오 카드 */}
                 <Card className="shadow-lg border-0">
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2">
@@ -296,14 +349,23 @@ export default function HomePage() {
                   </CardHeader>
                   <CardContent className="space-y-4">
                     <div className="bg-gray-50 rounded-lg p-6 text-center">
-                      <div className="bg-primary/10 rounded-full w-16 h-16 flex items-center justify-center mx-auto mb-4">
-                        <Play className="h-8 w-8 text-primary" />
-                      </div>
-                      {audioUrl ? (
-                        <audio controls src={audioUrl} preload="metadata" className="w-full" />
-                      ) : (
-                        <p className="text-sm text-gray-400">오디오를 불러오는 중입니다...</p>
-                      )}
+                      <button
+                        onClick={handlePlayAudio}
+                        className="bg-primary/10 rounded-full w-16 h-16 flex items-center justify-center mx-auto mb-4 hover:bg-primary/20"
+                      >
+                        {isPlaying ? (
+                          <Pause className="h-8 w-8 text-primary" />
+                        ) : (
+                          <Play className="h-8 w-8 text-primary" />
+                        )}
+                      </button>
+                      <audio
+                        ref={audioRef}
+                        controls
+                        src={audioUrl}
+                        className="w-full"
+                        onTimeUpdate={handleTimeUpdate}
+                      />
                     </div>
                     <Button
                       variant="outline"
@@ -317,6 +379,7 @@ export default function HomePage() {
                   </CardContent>
                 </Card>
 
+                {/* 가사 카드 */}
                 <Card className="shadow-lg border-0">
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2">
@@ -325,8 +388,26 @@ export default function HomePage() {
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-4">
-                    <div className="bg-gray-50 rounded-lg p-4 h-48 overflow-y-auto whitespace-pre-wrap text-sm text-gray-700 font-mono leading-relaxed">
-                      {lyrics || "가사를 불러오는 중입니다..."}
+                    <div
+                      ref={lyricsRef}
+                      className="bg-gray-50 rounded-lg p-4 h-48 overflow-y-auto whitespace-pre-wrap text-sm text-gray-700 font-mono leading-relaxed"
+                      style={{ scrollBehavior: "smooth" }}
+                    >
+                      {timedLyrics.length > 0
+                        ? timedLyrics.map((line, idx) => (
+                            <p
+                              key={idx}
+                              data-index={idx}
+                              className={`py-0.5 ${
+                                idx === currentLine
+                                  ? "text-primary font-semibold bg-primary/20 rounded"
+                                  : ""
+                              }`}
+                            >
+                              {line.text}
+                            </p>
+                          ))
+                        : lyrics || "가사를 불러오는 중입니다..."}
                     </div>
                     <Button
                       variant="outline"
@@ -344,7 +425,7 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* 주요 기능 */}
+        {/* 기능 안내 & 사용법 */}
         <div className="mb-20">
           <h2 className="text-3xl font-bold text-center text-gray-900 mb-12">
             주요 기능
@@ -369,7 +450,6 @@ export default function HomePage() {
           </div>
         </div>
 
-        {/* 사용 방법 */}
         <div className="mb-20">
           <h2 className="text-3xl font-bold text-center text-gray-900 mb-12">
             사용 방법
@@ -384,9 +464,7 @@ export default function HomePage() {
                   <h3 className="text-xl font-semibold text-gray-900 mb-3">
                     {step.title}
                   </h3>
-                  <p className="text-gray-600 leading-relaxed">
-                    {step.description}
-                  </p>
+                  <p className="text-gray-600 leading-relaxed">{step.description}</p>
                 </div>
               ))}
             </div>
