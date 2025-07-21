@@ -1,5 +1,4 @@
-!<img width="1102" height="738" alt="image" src="https://github.com/user-attachments/assets/5b6f0f6b-3dd0-4022-b923-a781104da7f1" />
-
+<img width="1102" height="738" alt="image" src="https://github.com/user-attachments/assets/5b6f0f6b-3dd0-4022-b923-a781104da7f1" /> <img width="1065" height="716" alt="image" src="https://github.com/user-attachments/assets/2889b865-17aa-4970-a239-c0155f3430e3" />
 
 
 # MR 제거 가사 사이트 - 프론트엔드
